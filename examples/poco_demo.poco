@@ -1,0 +1,40 @@
+# Vector operations
+v vec 1 2 3 4
+print "start" v
+w mul v 10
+print w
+set v 1 9
+print v
+x get v 1
+print x
+z sum v
+print z
+q dot v w
+print q
+s shift v 1
+print s
+c cshift v 1
+print c
+r pow v 2
+print r
+# Multiples, scalar broadcast
+b add v 0.5
+print b
+function square x { y mul x x }
+a square 5
+print a
+for i 3 { t square i
+print t }
+if 0 { print "bad" } else { print "good" }
+if 1 { print "yes" }
+function fact n {
+    if n {
+        nm1 sub n 1
+        prior fact nm1
+        z mul n prior
+    } else {
+        z set 1
+    }
+}
+f fact 5
+print f
