@@ -1,0 +1,13 @@
+; prelude.lisp -- the library, written in the language itself
+(define >      (lambda (a b) (< b a)))
+(define not    (lambda (x) (if x 0 1)))
+(define length (lambda (l) (if (null? l) 0 (+ 1 (length (cdr l))))))
+(define map    (lambda (f l) (if (null? l) '() (cons (f (car l)) (map f (cdr l))))))
+(define filter (lambda (p l)
+  (if (null? l) '()
+      (if (p (car l)) (cons (car l) (filter p (cdr l))) (filter p (cdr l))))))
+(define fold   (lambda (f acc l) (if (null? l) acc (fold f (f acc (car l)) (cdr l)))))
+(define range  (lambda (a b) (if (< a b) (cons a (range (+ a 1) b)) '())))
+(define make-counter (lambda ()
+  (begin (define n 0)
+         (lambda () (begin (set! n (+ n 1)) n)))))

@@ -5,23 +5,25 @@ PREFIX ?= /usr/local
 BINDIR = $(PREFIX)/bin
 LIBDIR = $(HOME)/.poco
 
-all: poco
+all: poco lisp vlisp vbasic vminimo
 
 poco: src/poco.cpp src/poco.h
 	$(CXX) $(CXXFLAGS) src/poco.cpp -o poco
 
-install: poco
-	install -d $(BINDIR) $(LIBDIR)
-	install -m 755 poco $(BINDIR)/poco
-	install -m 644 src/stdlib.poco $(LIBDIR)/stdlib.poco
+lisp: src/lisp.cpp src/lisp.h
+	$(CXX) $(CXXFLAGS) src/lisp.cpp -o lisp
 
-uninstall: poco
-	rm -f $(BINDIR)/poco
-	rm -rf $(LIBDIR)	
+vlisp: src/vlisp.cpp src/vlisp.h
+	$(CXX) $(CXXFLAGS) src/vlisp.cpp -o vlisp
 
+vbasic: src/vbasic.cpp 
+	$(CXX) $(CXXFLAGS) src/vbasic.cpp -o vbasic
+
+vbasic: src/vminimo.cpp 
+	$(CXX) $(CXXFLAGS) src/vminimo.cpp -o vminimo
 
 clean:
-	rm -f poco
+	rm -f poco lisp vlisp vbasic vminimo
 
-.PHONY: all clean install uninstall
+.PHONY: all clean 
 

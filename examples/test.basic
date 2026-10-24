@@ -1,0 +1,41 @@
+# Programma di esempio per l'interprete C++ basato su valarray
+
+# Creiamo un vettore di 5 elementi usando 'vec'
+vec v 1.0 2.0 3.0 4.0 5.0
+print v
+
+# Eseguiamo operazioni algebriche con broadcast (moltiplicazione per scalare e somma)
+mul scaled v 10.0
+print scaled
+
+# Testiamo le funzioni statistiche e di riduzione
+mean m scaled
+print m
+
+stddev sd scaled
+print sd
+
+# Testiamo il recupero e la modifica di singoli elementi (get / put)
+get el scaled 2
+print el
+
+put scaled 2 999.0
+print scaled
+
+# Definiamo una procedura ricorsiva o di calcolo (es. somma cumulativa o fattoriale simulato)
+proc count_down x
+    # x è un valore scalare passato come argomento
+    print x
+    gt cond x 0.0
+    if cond loop_start
+    return 0.0
+
+loop_start:
+    sub next_x x 1.0
+    call res count_down next_x
+    return next_x
+end
+
+# Chiamiamo la procedura definita sopra con un argomento scalare iniziale
+call final_val count_down 3.0
+print final_val
