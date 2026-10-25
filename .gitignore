@@ -2,6 +2,8 @@
 src/.DS_Store
 poco
 lisp
-vlisp
+vl
 vbasic
 vminimo
+tiny_scheme
+

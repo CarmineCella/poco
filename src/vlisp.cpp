@@ -1,24 +1,31 @@
-#include "vlisp.h"
-#include <fstream>
+// vlisp.cpp
+//
 
+#include "vlisp.h"
+
+using namespace std;
+
+// usage: vl [file ...] [-] files are loaded in order; "-" starts the REPL
 int main(int argc, char** argv) {
     EnvPtr env = globals();
     for (int i = 1; i < argc; ++i) {
-        std::ifstream file(argv[i]);
+        if (std::string(argv[i]) == "-") {
+            repl(env);
+            continue;
+        }
         try {
-            run(file, env, false);
+            load({cell(std::string(argv[i]))}, env);
         } catch (Error& e) {
-            std::cerr << argv[i] << ": ";
             report(e, std::cerr);
             return 1;
         }
     }
     if (argc == 1) {
-        try {
-            repl(env);
-        } catch (Error& e) {
-            report(e, std::cerr);
-            return 1;
-        }
+        cout << "[vlisp, v0.1]" << endl << endl;
+        repl(env);
     }
+
+    return 0;
 }
+
+// eof
