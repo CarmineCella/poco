@@ -5,7 +5,7 @@ PREFIX ?= /usr/local
 BINDIR = $(PREFIX)/bin
 VLISPDIR = $(HOME)/.vlisp
 
-all: poco lisp vlisp vbasic vminimo tiny_scheme
+all: poco lisp vlisp vbasic vminimo tiny_scheme mini
 
 poco: src/poco.cpp src/poco.h
 	$(CXX) $(CXXFLAGS) src/poco.cpp -o poco
@@ -25,18 +25,20 @@ vminimo: src/vminimo.cpp
 tiny_scheme: src/tiny_scheme.cpp 
 	$(CXX) $(CXXFLAGS) src/tiny_scheme.cpp -o tiny_scheme
 
+mini: src/mini.cpp 
+	$(CXX) $(CXXFLAGS) src/mini.cpp -o mini
 
 install: vlisp
 	install -d $(BINDIR) $(VLISPDIR)
 	install -m 755 vl $(BINDIR)/vl
 	install -m 644 src/prelude.lisp $(VLISPDIR)/prelude.lisp
-
+	
 uninstall: vlisp
 	rm -f $(BINDIR)/vl
 	rm -rf $(VLISPDIR)
 
 clean:
-	rm -f poco lisp vlisp vbasic vminimo
+	rm -f poco lisp vlisp vbasic vminimo tiny_scheme mini
 
 .PHONY: all clean 
 

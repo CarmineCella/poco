@@ -25,7 +25,7 @@
 (display (- 5) (/ 4))                ; and are unary negation and reciprocal with one
 (display (pow [2 3] 2) (sqrt [4 9]) (abs [-1 2]) (floor [1.7 -1.2]))
 (display (sin 0) (cos 0) (exp 1) (log 1) (tan 0) (atan 1))
-(display (sum [1 2 3]) (min [3 1 2]) (max [3 1 2]) (len [1 2 3]))
+(display (sum [1 2 3]) (max [3 1 2]) (len [1 2 3]))
 
 ; comparisons return masks of 0 and 1
 (display (< [1 5 3] 3))              ; [1 0 0]
@@ -34,7 +34,7 @@
 
 (display "--- 3. making arrays")
 
-(display (make 4 0))                 ; (make n value)
+(display (build 4 (lambda (i) (* i i))))   ; (build n f): the array whose i-th element is (f i)
 (display (range 5))                  ; 0 .. n-1
 (display (range 2 5))                ; start .. end-1
 (display (range 0 1 0.25))           ; start, end excluded, step
@@ -42,24 +42,25 @@
 (display (slice (range 10) 2 5))     ; (slice x start end), end excluded
 (display (slice (range 10) 0 10 3))  ; optional step
 (display (cat [1 2] [3 4]))          ; concatenation
-(display (cshift [1 2 3 4] 1))       ; circular shift, negative goes the other way
 (display (ref [10 20 30] 1))         ; element access, 0-based
 
-(display "--- 4. mutation and sharing")
+(display "--- 4. arrays are values")
 
+; there is no way to change an element: every operation returns a new array,
+; so sharing is always safe and a literal is the same value every time it is evaluated
 (define a [1 2 3])
-(set-ref! a 0 99)                    ; set-ref! changes the array in place
-(display a)
-(define b a)                         ; b is the same array, not a copy
-(set-ref! b 1 0)
-(display a)                          ; [99 0 3]
-(define c (+ a 0))                   ; any arithmetic produces a new array
-(set-ref! c 2 -1)
-(display a c)                        ; a is untouched
-; literals in a program are never changed: each evaluation gives a fresh array
-(define (three) [1 2 3])
-(set-ref! (three) 0 100)
-(display (three))                    ; still [1 2 3]
+(define b a)
+(display (equal? a b) (equal? (+ a 0) a))
+; per-element computation is build with a function of the index; the function may keep
+; state in a closure, which is how recurrences are written
+(define (cumsum x) {
+    (define acc 0)
+    (build (len x) (lambda (i) {
+        (set! acc (+ acc (ref x i)))
+        acc
+    }))
+})
+(display (cumsum [1 2 3 4]))         ; [1 3 6 10]
 
 (display "--- 5. definitions and functions")
 
@@ -67,19 +68,24 @@
 (define square (lambda (x) (* x x)))               ; a procedure
 (define (cube x) (* x x x))                        ; the same, shorter
 (display (square [1 2 3]) (cube 2))
-(define (stats x)                                  ; a body is one expression: {} sequences several, the last is the value
-  { (define m (/ (sum x) (len x)))
-  (define v (/ (sum (pow (- x m) 2)) (len x)))
-  (list m (sqrt v)) })
+(define (stats x) {   ; a body is one expression: {} sequences several, the last is the value
+    (define m (/ (sum x) (len x)))
+    (define v (/ (sum (pow (- x m) 2)) (len x)))
+    (list m (sqrt v))
+})
 (display (stats [2 4 4 4 5 5 7 9]))                ; mean and standard deviation
 (set! sr 200)                                      ; set! changes an existing binding
 (display sr)
 (display square)                                   ; procedures print as their source
 
 ; closures capture their environment
-(define (make-counter)
-  { (define n 0)
-  (lambda () { (set! n (+ n 1)) n }) })
+(define (make-counter) {
+    (define n 0)
+    (lambda () {
+        (set! n (+ n 1))
+        n
+    })
+})
 (define tick (make-counter))
 (tick) (tick)
 (display (tick))                                   ; 3
@@ -94,8 +100,17 @@
 ; an array is true when it is non-empty and all its elements are non-zero
 (display (if [1 2] "all" "some") (if [1 0] "all" "some") (if [] "non-empty" "empty"))
 (display (do (display "first") (display "second") "last"))
-(display {(display "braces") "are do"})           ; {e1 e2 ...} reads as (do e1 e2 ...)
-(display (if (> 3 2) {(display "then") 1} {(display "else") 2}))
+(display {
+    (display "braces")
+    "are do"
+})           ; {e1 e2 ...} reads as (do e1 e2 ...)
+(display (if (> 3 2) {
+    (display "then")
+    1
+} {
+    (display "else")
+    2
+}))
 
 ; recursion; tail calls run in constant stack
 (define (fact n) (if (< n 2) 1 (* n (fact (- n 1)))))
@@ -103,21 +118,31 @@
 (define (count-up i acc) (if (= i 0) acc (count-up (- i 1) (+ acc 1))))
 (display (count-up 100000 0))
 
-; for binds i = 0 .. n-1 in a child frame; use it for per-sample loops
-(define y (make 5 0))
-(for (i (len y)) (set-ref! y i (* i i)))
-(display y)
+; there is no loop statement: iterate with tail recursion, or with build when the result is an array
+(define (count-down n) (if (= n 0) "done" (count-down (- n 1))))
+(display (count-down 1000))
 
-(display "--- 7. lists")
+(display "--- 7. sequences: arrays, lists and strings")
 
-(define l '(1 2 3))
-(display (car l) (cdr l) (cons 0 l) (null? l) (null? '()) (len l))
-(define (map f l) (if (null? l) '() (cons (f (car l)) (map f (cdr l)))))
-(define (fold f acc l) (if (null? l) acc (fold f (f acc (car l)) (cdr l))))
-(display (map square l) (fold + 0 l))
-(display (apply + l))                              ; apply spreads a list as arguments
+; there are no pairs, no car/cdr/cons: a list is a sequence of any values, a string a sequence
+; of characters, an array a sequence of numbers, and the same five operations work on all three
+(define l '(a "b" [1 2]))
+(display (ref l 0) (ref "hello" 1) (len l) (len "hello"))
+(display (slice l 1 3) (slice "hello" 1 4) (slice '(a b c d) 0 4 2))
+(display (cat '(a) '(b c)) (cat "ab" "cd") (cat (list 0) '(1 2)))   ; cat prepends too
+; build makes a list whenever a result is not a scalar
+(display (build 3 (lambda (i) (list i (* i i)))))
+; so map and fold are one-liners over ref and build; numbers always come back as an array
+(define (map f x) (build (len x) (lambda (i) (f (ref x i)))))
+(define (fold f acc x) {
+    (define (go i acc) (if (= i (len x)) acc (go (+ i 1) (f acc (ref x i)))))
+    (go 0 acc)
+})
+(display (map square '(1 2 3)) (map len (list [1 2] [3 4 5])) (fold cat "" (list "a" "b" "c")))
+(display (apply + '(1 2 3)))                       ; apply spreads a list as arguments
 (display (array->list [1 2]) (list->array '(3 4)))
 (display (list [1 2 3] [4 5]))                     ; a list of arrays: frames, channels, ...
+; lists are stored as vectors: ref is O(1), slice and cat copy, build is the linear-time constructor
 
 (display "--- 8. equality")
 
@@ -130,7 +155,7 @@
 (define signal (sin (* 2 3.141592653589793 5 (/ (range 8) 100))))
 (save "tutorial_tmp.vl" signal '(1 "two" three) square)
 (define back (read "tutorial_tmp.vl"))
-(display (len back) (equal? (car back) signal))
+(display (len back) (equal? (ref back 0) signal))
 ; load evaluates a file and returns its last value; a saved definition loads back as a definition
 (save "tutorial_tmp.vl" (list 'define 'twice (lambda (x) (* 2 x))) '(twice 21))
 (display (load "tutorial_tmp.vl") (twice 4))
@@ -149,33 +174,29 @@
 (display "rms" (rms x))
 (define (hann n) (* 0.5 (- 1 (cos (* 2 3.141592653589793 (/ (range n) n))))))
 (display "window" (slice (hann 8) 0 8))
-(define (moving-average x n)                              ; vectorized: a sum of shifted copies
-  { (define acc (make (len x) 0))
-  (for (k n) (set! acc (+ acc (cshift x k))))
-  (/ acc n) })
+(define (cshift x k) (cat (slice x k (len x)) (slice x 0 k)))   ; circular shift left by k
+(define (moving-average x n) {   ; vectorized: a sum of shifted copies
+    (define (go k acc) (if (= k n) (/ acc n) (go (+ k 1) (+ acc (cshift x k)))))
+    (go 0 (* 0 x))
+})
 (display "smoothed" (slice (moving-average x 10) 0 4))
-(define (frames x n hop)                                  ; a list of windowed frames
-  { (define (go i acc)
-    (if (> (+ i n) (len x))
-        acc
-        (go (+ i hop) (cons (* (hann n) (slice x i (+ i n))) acc))))
-  (go 0 '()) })
+(define (frames x n hop)                                  ; a list of windowed frames, built in one go
+  (build (+ 1 (floor (/ (- (len x) n) hop))) (lambda (k) (* (hann n) (slice x (* k hop) (+ (* k hop) n))))))
 (display "frames" (len (frames x 256 128)))
-(define (fir x h)                                         ; per-sample loop: fine for prototypes, slow for real work
-  { (define y (make (len x) 0))
-  (for (i (len x))
-    (for (k (len h))
-      (if (>= (- i k) 0)
-          (set-ref! y i (+ (ref y i) (* (ref h k) (ref x (- i k))))))))
-  y })
-(display "fir" (slice (fir [1 0 0 1 0] [0.5 0.5]) 0 5))
+(define (onepole x a) {   ; a recurrence: y[i] = a y[i-1] + (1-a) x[i]
+    (define y 0)
+    (build (len x) (lambda (i) {
+        (set! y (+ (* a y) (* (- 1 a) (ref x i))))
+        y
+    }))
+})
+(display "onepole" (onepole [1 0 0 0 0] 0.5))
 (save "tutorial_tmp.vl" x)                                ; keep the result
 
 (display "--- 11. introspection and errors")
 
-(display (len (env)))                 ; every name visible here
-(define (f u) (car (env)))
-(display (f 1))                       ; u: the innermost frame comes first
+(help)                                ; the forms, every primitive with its arguments, and what you defined
+(help 'moving-average)                ; one procedure: its source
 ; errors stop the file and print the expression where they happened, with file:line when loaded:
 ;   error: vlisp_tutorial.lisp:NN: undefined variable
 ;       in undefined-thing

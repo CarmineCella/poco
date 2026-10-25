@@ -20,6 +20,7 @@
 #include <valarray>
 #include <variant>
 #include <vector>
+#include <string_view>
 
 // AST
 struct Cell;
@@ -28,20 +29,15 @@ using Ptr = std::shared_ptr<Cell>;
 using EnvPtr = std::shared_ptr<Env>;
 using List = std::vector<Ptr>;
 using Array = std::valarray<double>;
-struct Prim { std::function<Ptr(const List&, const EnvPtr&)> fn; int arity; std::string name = ""; };   // arity -1 = any number
+struct Prim { Ptr (*fn)(const List&, const EnvPtr&); std::string sig, name; int arity; };   // arity -1: the primitive checks
 struct Symbol { std::string name; };
 struct Lambda { List params; Ptr body; EnvPtr env; };
 struct Cell : std::variant<Symbol, Array, std::string, List, Prim, Lambda> {
     using variant::variant;
 };
 inline std::ostream& print(const Ptr& p, std::ostream& out);
-struct Error : std::runtime_error {
-    Ptr node;
-    Error(const std::string& msg, Ptr n = nullptr) : std::runtime_error(msg), node(std::move(n)) {}
-};
-[[noreturn]] inline void error(const std::string& msg, const Ptr& node = nullptr) {
-    throw Error(msg, node);
-}
+struct Error : std::runtime_error { Ptr node; Error(const std::string& m, Ptr n = nullptr) : runtime_error(m), node(n) {} };
+[[noreturn]] inline void error(const std::string& msg, const Ptr& node = nullptr) { throw Error(msg, node); }
 inline void report(const Error& e, std::ostream& out) {
     out << "error: " << e.what();
     if (e.node) print(e.node, out << "\n    in ");
@@ -61,24 +57,14 @@ inline double scalar(const Ptr& p) {
     if (!is<Array>(p) || as<Array>(p).size() != 1) error("expected a scalar", p);
     return as<Array>(p)[0];
 }
-inline long integer(const Ptr& p) {                               // a whole number that fits an int
+inline size_t index(const Ptr& p, size_t limit) {                 // an integer in [0, limit); NaN fails every test
     double d = scalar(p);
-    if (!std::isfinite(d) || std::trunc(d) != d || std::abs(d) > 2147483647.0) error("expected an integer", p);
-    return long(d);
-}
-inline size_t index(const Ptr& p, size_t limit) {                 // an integer in [0, limit)
-    long i = integer(p);
-    if (i < 0 || size_t(i) >= limit) error("index out of range", p);
-    return size_t(i);
+    if (!(d >= 0 && d < double(limit) && std::trunc(d) == d)) error("index out of range", p);
+    return size_t(d);
 }
 inline const size_t LIMIT = 1 << 27;                              // elements per array: 1 GB of doubles
-inline const Array& nonempty(const Ptr& p) {
-    if (as<Array>(p).size() == 0) error("empty array");
-    return as<Array>(p);
-}
-inline const List& nonempty_list(const Ptr& p) {
-    if (as<List>(p).empty()) error("empty list");
-    return as<List>(p);
+inline size_t length(const Ptr& p) {                             // of an array, a list or a string
+    return is<List>(p) ? as<List>(p).size() : is<std::string>(p) ? as<std::string>(p).size() : as<Array>(p).size();
 }
 inline bool truth(const Ptr& p) {                                 // an array is true if non-empty and all non-zero
     if (is<Array>(p)) {
@@ -100,16 +86,15 @@ struct Depth {                                             // guards the C++ sta
 struct Env {
     std::map<std::string, Ptr> vars;
     EnvPtr parent;
-    Ptr& find(const Ptr& symbol) {
-        const std::string& name = as<Symbol>(symbol).name;
-        auto it = vars.find(name);
-        if (it != vars.end()) return it->second;
-        if (!parent) error("undefined variable", symbol);
-        return parent->find(symbol);
+    Ptr& find(const Ptr& s) {
+        for (Env* e = this; e; e = e->parent.get()) {
+            auto it = e->vars.find(as<Symbol>(s).name);
+            if (it != e->vars.end()) return it->second;
+        }
+        error("undefined variable", s);
     }
 };
 inline std::ostream& print(const Ptr& p, std::ostream& out) {
-    std::setprecision(12);
     if (is<Symbol>(p)) return out << as<Symbol>(p).name;
     if (is<std::string>(p)) {
         out << '"';
@@ -208,11 +193,7 @@ inline Ptr parse(Reader& r, const std::string& t) {              // the datum th
     double d;
     return is_number(t, d) ? num(d) : sym(t);
 }
-inline Ptr read(Reader& r) {                                      // next datum, null at end of input
-    std::string t = scan(r);
-    r.start = r.token;
-    return t.empty() ? nullptr : parse(r, t);
-}
+inline Ptr read(Reader& r) { std::string t = scan(r); r.start = r.token; return t.empty() ? nullptr : parse(r, t); }   // null at end
 
 // EVALUATOR
 inline Ptr sugar(const List& l) {                                 // (define (f x) body) = (define f (lambda (x) body))
@@ -220,43 +201,22 @@ inline Ptr sugar(const List& l) {                                 // (define (f 
     if (sig.empty()) error("malformed define");
     return cell(List{sym("define"), sig[0], cell(List{sym("lambda"), cell(List(sig.begin() + 1, sig.end())), l[2]})});
 }
-inline Ptr clone(const Ptr& p) {                                  // fresh arrays: set-ref! must never edit the program
-    if (is<Array>(p)) return cell(as<Array>(p));
-    if (!is<List>(p)) return p;
-    List r;
-    for (const Ptr& x : as<List>(p)) r.push_back(clone(x));
-    return cell(r);
-}
 inline Ptr vapply(const Ptr& f, const Ptr& args) {                // (apply f lst) = (f 'a1 'a2 ...), still a tail call
     List call{f};
     for (const Ptr& p : as<List>(args)) call.push_back(cell(List{sym("quote"), p}));
     return cell(call);
 }
-inline Ptr eval(Ptr x, EnvPtr env);
-inline Ptr loop(const List& l, EnvPtr env) {                      // (for (i n) body): i = 0 .. n-1, bound in a child frame
-    if (l.size() != 3 || !is<List>(l[1]) || as<List>(l[1]).size() != 2) error("malformed for");
-    const std::string& var = as<Symbol>(as<List>(l[1])[0]).name;
-    size_t n = index(eval(as<List>(l[1])[1], env), LIMIT + 1);
-    auto local = std::make_shared<Env>();
-    local->parent = env;
-    for (size_t i = 0; i < n; ++i) {
-        local->vars[var] = num(double(i));
-        eval(l[2], local);
-    }
-    return nil();
-}
-
 inline Ptr eval(Ptr x, EnvPtr env) {
     Depth guard(2500);
     try {
         while (true) {                                        // loop = tail calls
             if (is<Symbol>(x)) return env->find(x);
-            if (!is<List>(x) || as<List>(x).empty()) return clone(x);
+            if (!is<List>(x) || as<List>(x).empty()) return x;           // values are immutable, so literals are shared
             const List& l = as<List>(x);
-            std::string head = is<Symbol>(l[0]) ? as<Symbol>(l[0]).name : "";
+            std::string_view head = is<Symbol>(l[0]) ? std::string_view(as<Symbol>(l[0]).name) : std::string_view();
             if (head == "quote" && l.size() != 2) error("malformed quote");
-            if ((head == "define" || head == "set!" || head == "lambda") && l.size() != 3) error("malformed " + head);
-            if (head == "quote") return clone(l[1]);
+            if ((head == "define" || head == "set!" || head == "lambda") && l.size() != 3) error("malformed " + std::string(head));
+            if (head == "quote") return l[1];
             if (head == "define" && is<List>(l[1])) {
                 x = sugar(l);
                 continue;
@@ -281,7 +241,6 @@ inline Ptr eval(Ptr x, EnvPtr env) {
                 x = vapply(eval(l[1], env), eval(l[2], env));
                 continue;
             }
-            if (head == "for") return loop(l, env);
             if (head == "do") {
                 if (l.size() == 1) return nil();
                 for (size_t i = 1; i + 1 < l.size(); ++i) eval(l[i], env);
@@ -290,11 +249,11 @@ inline Ptr eval(Ptr x, EnvPtr env) {
             }
             Ptr f = eval(l[0], env);
             List args;
-            for (size_t i = 1; i < l.size(); ++i) args.push_back(eval(l[i], env));
+            args.reserve(l.size() - 1);
+            for (size_t i = 1; i < l.size(); ++i) args.push_back(eval(l[i], env));            
             if (is<Prim>(f)) {
-                const Prim& p = as<Prim>(f);
-                if (p.arity >= 0 && int(args.size()) != p.arity) error("wrong number of arguments");
-                return p.fn(args, env);
+                if (as<Prim>(f).arity >= 0 && int(args.size()) != as<Prim>(f).arity) error("wrong number of arguments");
+                return as<Prim>(f).fn(args, env);
             }
             if (!is<Lambda>(f)) error("not a procedure", l[0]);
             const Lambda& fn = as<Lambda>(f);
@@ -333,11 +292,16 @@ template<class Op> Ptr compare(const List& a, const EnvPtr&) {
     r[mask] = 1.0;
     return cell(r);
 }
-inline Ptr unary(Array (*f)(const Array&)) {
-    return cell(Prim{[f](const List& a, const EnvPtr&) { return cell(f(as<Array>(a[0]))); }, 1});
-}
+template<double (*F)(double)> Ptr unary(const List& a, const EnvPtr&) { return cell(Array(as<Array>(a[0]).apply(F))); }
 struct Pow { template<class X, class Y> Array operator()(const X& x, const Y& y) const { return std::pow(x, y); } };
-inline Ptr make(const List& a, const EnvPtr&) { return cell(Array(scalar(a[1]), index(a[0], LIMIT + 1))); }
+inline Ptr build(const List& a, const EnvPtr&) {                  // (build n f): (f 0) .. (f n-1); an array if all are scalars, else a list
+    List r(index(a[0], LIMIT + 1));
+    for (size_t i = 0; i < r.size(); ++i) r[i] = eval(cell(List{a[1], num(double(i))}), std::make_shared<Env>());
+    if (!std::all_of(r.begin(), r.end(), [](const Ptr& p) { return is<Array>(p) && as<Array>(p).size() == 1; })) return cell(r);
+    Array x(r.size());
+    for (size_t i = 0; i < r.size(); ++i) x[i] = as<Array>(r[i])[0];
+    return cell(x);
+}
 inline Ptr range(const List& a, const EnvPtr&) {                  // (range [start] end [step]), end excluded
     if (a.empty() || a.size() > 3) error("wrong number of arguments");
     double start = a.size() > 1 ? scalar(a[0]) : 0, end = scalar(a[a.size() > 1]), step = a.size() > 2 ? scalar(a[2]) : 1;
@@ -347,14 +311,26 @@ inline Ptr range(const List& a, const EnvPtr&) {                  // (range [sta
     for (size_t k = 0; k < r.size(); ++k) r[k] = std::fma(double(k), step, start);
     return cell(r);
 }
-inline Ptr vslice(const List& a, const EnvPtr&) {                 // (slice x start end [step]), end excluded
-    if (a.size() != 3 && a.size() != 4) error("wrong number of arguments");
-    const Array& x = as<Array>(a[0]);
-    size_t start = index(a[1], x.size() + 1), end = index(a[2], x.size() + 1), step = a.size() == 4 ? index(a[3], x.size() + 1) : 1;
-    if (end < start || step == 0) error("invalid slice");
-    return cell(Array(x[std::slice(start, (end - start + step - 1) / step, step)]));
+template<class C> Ptr take(const C& c, size_t s, size_t e, size_t step) {   // elements s, s+step, ... below e
+    C r;
+    for (size_t i = s; i < e; i += step) r.push_back(c[i]);
+    return cell(r);
 }
-inline Ptr cat(const List& a, const EnvPtr&) {
+inline Ptr vslice(const List& a, const EnvPtr&) {                 // (slice x start end [step]), end excluded: arrays, lists, strings
+    if (a.size() != 3 && a.size() != 4) error("wrong number of arguments");
+    size_t n = length(a[0]), s = index(a[1], n + 1), e = index(a[2], n + 1), step = a.size() == 4 ? index(a[3], n + 1) : 1;
+    if (e < s || step == 0) error("invalid slice");
+    if (is<List>(a[0])) return take(as<List>(a[0]), s, e, step);
+    if (is<std::string>(a[0])) return take(as<std::string>(a[0]), s, e, step);
+    return cell(Array(as<Array>(a[0])[std::slice(s, (e - s + step - 1) / step, step)]));
+}
+inline Ptr cat(const List& a, const EnvPtr&) {                    // (cat x y): arrays, lists or strings
+    if (is<std::string>(a[0])) return cell(as<std::string>(a[0]) + as<std::string>(a[1]));
+    if (is<List>(a[0])) {
+        List r = as<List>(a[0]);
+        r.insert(r.end(), as<List>(a[1]).begin(), as<List>(a[1]).end());
+        return cell(r);
+    }
     const Array& x = as<Array>(a[0]);
     const Array& y = as<Array>(a[1]);
     Array r(x.size() + y.size());
@@ -373,13 +349,12 @@ inline Ptr list2array(const List& a, const EnvPtr&) {             // the list mu
     return cell(Array(v.data(), v.size()));
 }
 inline Ptr vsum(const List& a, const EnvPtr&) { return num(as<Array>(a[0]).size() ? as<Array>(a[0]).sum() : 0); }
-inline Ptr vmin(const List& a, const EnvPtr&) { return num(nonempty(a[0]).min()); }
-inline Ptr vmax(const List& a, const EnvPtr&) { return num(nonempty(a[0]).max()); }
-inline Ptr vcshift(const List& a, const EnvPtr&) { return cell(as<Array>(a[0]).cshift(int(integer(a[1])))); }
-inline Ptr vref(const List& a, const EnvPtr&) { return num(as<Array>(a[0])[index(a[1], as<Array>(a[0]).size())]); }
-inline Ptr vset(const List& a, const EnvPtr&) {                   // (set-ref! x i v): in place, x is shared
-    as<Array>(a[0])[index(a[1], as<Array>(a[0]).size())] = scalar(a[2]);
-    return a[2];
+inline Ptr vmax(const List& a, const EnvPtr&) { if (!as<Array>(a[0]).size()) error("empty array", a[0]); return num(as<Array>(a[0]).max()); }
+inline Ptr vref(const List& a, const EnvPtr&) {                   // (ref x i): an element of an array, a list or a string
+    size_t i = index(a[1], length(a[0]));
+    if (is<List>(a[0])) return as<List>(a[0])[i];
+    if (is<std::string>(a[0])) return cell(std::string(1, as<std::string>(a[0])[i]));
+    return num(as<Array>(a[0])[i]);
 }
 inline Ptr save(const List& a, const EnvPtr&) {                   // (save "file" x ...): printed form, one per line
     if (a.empty()) error("wrong number of arguments");
@@ -417,18 +392,7 @@ inline Ptr load(const List& a, const EnvPtr& env) {               // (load "file
     return v;                                              // the last value: (define f (load "f.vl"))
 }
 
-// lists and generic
-inline Ptr car(const List& a, const EnvPtr&) { return nonempty_list(a[0])[0]; }
-inline Ptr cdr(const List& a, const EnvPtr&) {
-    const List& l = nonempty_list(a[0]);
-    return cell(List(l.begin() + 1, l.end()));
-}
-inline Ptr cons(const List& a, const EnvPtr&) {
-    List r{a[0]};
-    const List& tail = as<List>(a[1]);
-    r.insert(r.end(), tail.begin(), tail.end());
-    return cell(r);
-}
+// lists, strings and generic
 inline Ptr list(const List& a, const EnvPtr&) { return cell(a); }
 inline bool vequal(const Ptr& a, const Ptr& b) {                  // structural; procedures by identity
     if (a->index() != b->index()) return false;
@@ -447,20 +411,33 @@ inline bool vequal(const Ptr& a, const Ptr& b) {                  // structural;
     return a == b;
 }
 inline Ptr isequal(const List& a, const EnvPtr&) { return num(vequal(a[0], a[1])); }
-inline Ptr isnull(const List& a, const EnvPtr&) { return num(is<List>(a[0]) && as<List>(a[0]).empty()); }
-inline Ptr len(const List& a, const EnvPtr&) {                    // of an array, a list or a string
-    if (is<List>(a[0])) return num(as<List>(a[0]).size());
-    if (is<std::string>(a[0])) return num(as<std::string>(a[0]).size());
-    return num(as<Array>(a[0]).size());
-}
+inline Ptr len(const List& a, const EnvPtr&) { return num(length(a[0])); }
 inline Ptr type(const List& a, const EnvPtr&) {
     static const char* names[] = {"symbol", "array", "string", "list", "primitive", "procedure"};   // variant order
     return cell(std::string(names[a[0]->index()]));
 }
-inline Ptr names(const List&, const EnvPtr& env) {                // (env): the symbols bound here and in enclosing frames
-    List r;
-    for (EnvPtr e = env; e; e = e->parent) for (const auto& [name, p] : e->vars) r.push_back(sym(name));
-    return cell(r);
+inline Ptr help(const List& a, const EnvPtr& env) {               // (help): what can be called, as call templates; (help 'f): f's source
+    if (a.size() > 1) error("wrong number of arguments");
+    if (a.size() == 1) {
+        Ptr p = env->find(a[0]);
+        if (is<Prim>(p)) std::cout << '(' << as<Prim>(p).name << ' ' << as<Prim>(p).sig << ")\n"; else print(p, std::cout) << '\n';
+        return nil();
+    }
+    std::cout << "forms: (quote x) (if test then else) (define name value) (define (name args) body) (set! name value)"
+                 " (lambda (args) body) (do e ...) {e ...} (apply f list)\n";
+    for (int pass = 0; pass < 2; ++pass) {                           // primitives, then everything else
+        std::cout << (pass ? "defined:" : "primitives:");
+        for (EnvPtr e = env; e; e = e->parent) for (const auto& [name, p] : e->vars) {
+            if (is<Prim>(p) == bool(pass)) continue;
+            if (is<Prim>(p)) std::cout << " (" << name << (as<Prim>(p).sig.empty() ? "" : " ") << as<Prim>(p).sig << ')';
+            else if (is<Lambda>(p)) { std::cout << " (" << name; for (const Ptr& q : as<Lambda>(p).params) print(q, std::cout << ' '); std::cout << ')'; }
+            else if (is<Array>(p) && as<Array>(p).size() != 1) std::cout << ' ' << name << " = array[" << as<Array>(p).size() << ']';
+            else if (is<List>(p)) std::cout << ' ' << name << " = list[" << as<List>(p).size() << ']';
+            else print(p, std::cout << ' ' << name << " = ");
+        }
+        std::cout << '\n';
+    }
+    return nil();
 }
 inline Ptr display(const List& a, const EnvPtr&) {
     for (const Ptr& x : a) {
@@ -474,33 +451,22 @@ inline Ptr display(const List& a, const EnvPtr&) {
 // INTERFACE
 inline EnvPtr globals() {
     auto env = std::make_shared<Env>();
-    env->vars = {
-        {"+", cell(Prim{arith<std::plus<>, 0>, -1})}, {"-", cell(Prim{arith<std::minus<>, 0>, -1})},
-        {"*", cell(Prim{arith<std::multiplies<>, 1>, -1})}, {"/", cell(Prim{arith<std::divides<>, 1>, -1})},
-        {"pow", cell(Prim{arith<Pow, 1>, 2})},
-        {"<", cell(Prim{compare<std::less<>>, 2})}, {"<=", cell(Prim{compare<std::less_equal<>>, 2})},
-        {">", cell(Prim{compare<std::greater<>>, 2})}, {">=", cell(Prim{compare<std::greater_equal<>>, 2})},
-        {"=", cell(Prim{compare<std::equal_to<>>, 2})}, {"!=", cell(Prim{compare<std::not_equal_to<>>, 2})},
-        {"abs", unary([](const Array& x) { return Array(std::abs(x)); })},
-        {"sqrt", unary([](const Array& x) { return Array(std::sqrt(x)); })},
-        {"exp", unary([](const Array& x) { return Array(std::exp(x)); })},
-        {"log", unary([](const Array& x) { return Array(std::log(x)); })},
-        {"sin", unary([](const Array& x) { return Array(std::sin(x)); })},
-        {"cos", unary([](const Array& x) { return Array(std::cos(x)); })},
-        {"tan", unary([](const Array& x) { return Array(std::tan(x)); })},
-        {"atan", unary([](const Array& x) { return Array(std::atan(x)); })},
-        {"floor", unary([](const Array& x) { return Array(x.apply([](double d) { return std::floor(d); })); })},
-        {"make", cell(Prim{make, 2})}, {"range", cell(Prim{range, -1})}, {"slice", cell(Prim{vslice, -1})},
-        {"cat", cell(Prim{cat, 2})}, {"cshift", cell(Prim{vcshift, 2})},
-        {"sum", cell(Prim{vsum, 1})}, {"min", cell(Prim{vmin, 1})}, {"max", cell(Prim{vmax, 1})},
-        {"ref", cell(Prim{vref, 2})}, {"set-ref!", cell(Prim{vset, 3})},
-        {"array->list", cell(Prim{array2list, 1})}, {"list->array", cell(Prim{list2array, 1})},
-        {"save", cell(Prim{save, -1})}, {"read", cell(Prim{readfile, 1})}, {"load", cell(Prim{load, 1})},
-        {"car", cell(Prim{car, 1})}, {"cdr", cell(Prim{cdr, 1})}, {"cons", cell(Prim{cons, 2})}, {"list", cell(Prim{list, -1})},
-        {"null?", cell(Prim{isnull, 1})}, {"equal?", cell(Prim{isequal, 2})}, {"len", cell(Prim{len, 1})},
-        {"type", cell(Prim{type, 1})}, {"env", cell(Prim{names, 0})}, {"display", cell(Prim{display, -1})},
+    auto def = [&](const char* name, Ptr (*fn)(const List&, const EnvPtr&), std::string sig) {   // "[x]" or "..." in sig: variadic
+        int arity = sig.find_first_of("[.") != std::string::npos ? -1 : sig.empty() ? 0 : int(std::count(sig.begin(), sig.end(), ' ')) + 1;
+        env->vars[name] = cell(Prim{fn, sig, name, arity});
     };
-    for (auto& [name, p] : env->vars) as<Prim>(p).name = name;   // so that primitives print as themselves
+    def("+", arith<std::plus<>, 0>, "x y ...");  def("-", arith<std::minus<>, 0>, "x y ...");  def("pow", arith<Pow, 1>, "x y");
+    def("*", arith<std::multiplies<>, 1>, "x y ...");  def("/", arith<std::divides<>, 1>, "x y ...");
+    def("<", compare<std::less<>>, "x y");  def("<=", compare<std::less_equal<>>, "x y");  def("=", compare<std::equal_to<>>, "x y");
+    def(">", compare<std::greater<>>, "x y");  def(">=", compare<std::greater_equal<>>, "x y");  def("!=", compare<std::not_equal_to<>>, "x y");
+    def("abs", unary<std::fabs>, "x");  def("sqrt", unary<std::sqrt>, "x");  def("exp", unary<std::exp>, "x");  def("log", unary<std::log>, "x");
+    def("sin", unary<std::sin>, "x");  def("cos", unary<std::cos>, "x");  def("tan", unary<std::tan>, "x");  def("atan", unary<std::atan>, "x");
+    def("floor", unary<std::floor>, "x");  def("range", range, "[start] end [step]");  def("slice", vslice, "x start end [step]");
+    def("build", build, "n f");  def("cat", cat, "x y");  def("sum", vsum, "x");  def("max", vmax, "x");  def("ref", vref, "x i");
+    def("array->list", array2list, "x");  def("list->array", list2array, "l");
+    def("save", save, "file x ...");  def("read", readfile, "file");  def("load", load, "file");
+    def("list", list, "x ...");
+    def("equal?", isequal, "x y");  def("len", len, "x");  def("type", type, "x");  def("help", help, "[name]");  def("display", display, "x ...");
     return env;
 }
 inline void repl(EnvPtr env) {

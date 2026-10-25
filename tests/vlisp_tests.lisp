@@ -4,11 +4,10 @@
 
 (define passed 0)
 (define failed 0)
-(define (check name got want)
-  (if (equal? got want)
-      (set! passed (+ passed 1))
-      { (set! failed (+ failed 1))
-        (display "FAIL" name "got" got "want" want) }))
+(define (check name got want) (if (equal? got want) (set! passed (+ passed 1)) {
+    (set! failed (+ failed 1))
+    (display "FAIL" name "got" got "want" want)
+}))
 (define (near a b) (< (max (abs (- a b))) 1e-9))     ; numeric comparison with tolerance
 
 ; ---------------------------------------------------------------- reader
@@ -23,7 +22,10 @@
 (check "string escapes" (len "a\"b\\c\nd") 7)
 (check "quote shorthand" '(1 2) (list 1 2))
 (check "quoted symbol" (type 'x) "symbol")
-(check "braces read as do" '{1 2} '(do 1 2))
+(check "braces read as do" '{
+    1
+    2
+} '(do 1 2))
 (check "comment" 1 ; a comment ends at the line
        1)
 (check "nested parens" '((1) (2 (3))) (list (list 1) (list 2 (list 3))))
@@ -44,17 +46,34 @@
 (check "string is true" (if "" 1 0) 1)
 (check "do returns last" (do 1 2 3) 3)
 (check "empty do" (do) '())
-(check "braces are do" {1 2 3} 3)
-(check "empty braces" {} '())
+(check "braces are do" {
+    1
+    2
+    3
+} 3)
+(check "empty braces" {
+
+} '())
 (check "lambda" ((lambda (a b) (- a b)) 5 3) 2)
-(check "lambda with a brace body" ((lambda () { (define t 1) (+ t 1) })) 2)
+(check "lambda with a brace body" ((lambda () {
+    (define t 1)
+    (+ t 1)
+})) 2)
 (define (f a b) (* a b))
 (check "define sugar" (f 6 7) 42)
-(define (g a) { (define b (* a 2)) (define c (+ b 1)) c })
+(define (g a) {
+    (define b (* a 2))
+    (define c (+ b 1))
+    c
+})
 (check "define sugar with a brace body" (g 5) 11)
-(define (make-counter)
-  { (define n 0)
-  (lambda () { (set! n (+ n 1)) n }) })
+(define (make-counter) {
+    (define n 0)
+    (lambda () {
+        (set! n (+ n 1))
+        n
+    })
+})
 (define c1 (make-counter))
 (define c2 (make-counter))
 (c1) (c1)
@@ -67,14 +86,26 @@
 (check "tail recursion" (count-down 100000) "done")
 (define (count-apply n) (if (= n 0) "done" (apply count-apply (list (- n 1)))))
 (check "apply is a tail call" (count-apply 100000) "done")
+(check "build" (build 5 (lambda (i) (* i i))) [0 1 4 9 16])
+(check "build with a primitive" (build 3 sqrt) (sqrt [0 1 2]))
+(check "build of nothing" (build 0 sqrt) [])
 (define acc 0)
-(for (i 5) (set! acc (+ acc i)))
-(check "for" acc 10)
-(define acc2 '())
-(for (i 3) { (define j (* i 10)) (set! acc2 (cons j acc2)) })
-(check "for with a brace body" acc2 '(20 10 0))
-(check "for with zero iterations" (for (i 0) (set! acc 999)) '())
-(check "for returns ()" acc 10)
+(check "build runs in order, state in a closure" (build 4 (lambda (i) {
+    (set! acc (+ acc i))
+    acc
+})) [0 1 3 6])
+(check "build captures i per call" (ref (build 3 (lambda (i) ((lambda () i)))) 1) 1)
+(check "build makes a list when a result is not a scalar" (build 3 (lambda (i) (list i))) '((0) (1) (2)))
+(check "build makes a list of strings" (build 2 (lambda (i) "s")) (list "s" "s"))
+(check "build of mixed results is a list" (build 2 (lambda (i) (if (= i 0) 1 [1 2]))) (list 1 [1 2]))
+(define (onepole x a) {
+    (define y 0)
+    (build (len x) (lambda (i) {
+        (set! y (+ (* a y) (* (- 1 a) (ref x i))))
+        y
+    }))
+})
+(check "recurrence with build" (onepole [1 0 0 0] 0.5) [0.5 0.25 0.125 0.0625])
 
 ; ---------------------------------------------------------------- arithmetic and broadcasting
 (check "add" (+ 1 2) 3)
@@ -100,10 +131,9 @@
 (check "atan tan" (near (atan (tan 0.5)) 0.5) 1)
 (check "sum" (sum [1 2 3 4]) 10)
 (check "sum of empty is 0" (sum []) 0)
-(check "min max" (list (min [3 1 2]) (max [3 1 2])) '(1 3))
+(check "max" (max [3 1 2]) 3)
 
 ; ---------------------------------------------------------------- arrays
-(check "make" (make 3 7) [7 7 7])
 (check "range n" (range 5) [0 1 2 3 4])
 (check "range start end" (range 2 5) [2 3 4])
 (check "range with step" (range 0 1 0.25) [0 0.25 0.5 0.75])
@@ -115,46 +145,44 @@
 (check "empty slice" (slice (range 10) 3 3) [])
 (check "cat" (cat [1 2] [3]) [1 2 3])
 (check "cat with empty" (cat [] [1]) [1])
-(check "cshift" (cshift [1 2 3 4] 1) [2 3 4 1])
-(check "cshift negative" (cshift [1 2 3 4] -1) [4 1 2 3])
 (check "ref" (ref [10 20 30] 1) 20)
 (define a [1 2 3])
-(set-ref! a 0 99)
-(check "set-ref!" a [99 2 3])
-(check "set-ref! returns the value" (set-ref! a 1 5) 5)
 (define b a)
-(set-ref! b 2 0)
-(check "arrays are shared by reference" a [99 5 0])
-(define cpy (+ a 0))
-(set-ref! cpy 0 1)
-(check "arithmetic makes a copy" a [99 5 0])
+(check "arrays are values: sharing is invisible" (equal? a b) 1)
 (define (literal) [1 2 3])
-(set-ref! (literal) 0 100)
-(check "literals are never mutated" (literal) [1 2 3])
-(define (quoted) '([1 2] 3))
-(set-ref! (car (quoted)) 0 100)
-(check "quoted data is never mutated" (quoted) '([1 2] 3))
+(check "literals are shared safely" (equal? (literal) (literal)) 1)
+(check "quoted data" (ref '([1 2] 3) 0) [1 2])
 (check "array->list" (array->list [1 2]) '(1 2))
 (check "list->array" (list->array '(1 2 3)) [1 2 3])
 (check "list->array of empty" (list->array '()) [])
 (check "round trip" (list->array (array->list (range 4))) (range 4))
 
-; ---------------------------------------------------------------- lists
+; ---------------------------------------------------------------- lists and strings are sequences too
 (check "list" (list 1 "a" 'b) '(1 "a" b))
 (check "empty list" (list) '())
-(check "car" (car '(1 2 3)) 1)
-(check "cdr" (cdr '(1 2 3)) '(2 3))
-(check "cdr of single" (cdr '(1)) '())
-(check "cons" (cons 0 '(1 2)) '(0 1 2))
-(check "cons onto empty" (cons 1 '()) '(1))
-(check "null? empty" (null? '()) 1)
-(check "null? non-empty" (null? '(1)) 0)
-(check "null? array" (null? []) 0)
-(define (length l) (if (null? l) 0 (+ 1 (length (cdr l)))))
-(check "recursion on lists" (length '(1 2 3 4)) 4)
-(define (map f l) (if (null? l) '() (cons (f (car l)) (map f (cdr l)))))
-(check "map" (map (lambda (v) (* v v)) '(1 2 3)) '(1 4 9))
+(check "ref on a list" (ref '(a b c) 1) 'b)
+(check "ref on a string" (ref "hello" 1) "e")
+(check "slice on a list" (slice '(a b c d) 1 3) '(b c))
+(check "slice with step on a list" (slice '(a b c d) 0 4 2) '(a c))
+(check "slice on a string" (slice "hello" 1 4) "ell")
+(check "empty slice of a list" (slice '(a) 1 1) '())
+(check "cat lists" (cat '(a) '(b c)) '(a b c))
+(check "cat with the empty list" (cat (list) (list 1)) '(1))
+(check "cat strings" (cat "ab" "cd") "abcd")
+(check "len" (list (len '(1 2)) (len "abc") (len (list))) '(2 3 0))
+(check "prepend" (cat (list 0) '(1 2)) '(0 1 2))
+(check "rest" (slice '(1 2 3) 1 3) '(2 3))
+(define (map f x) (build (len x) (lambda (i) (f (ref x i)))))
+(check "map over a list of arrays" (map len (list [1 2] [3 4 5])) [2 3])
+(check "map over a string" (map (lambda (c) (cat c c)) "ab") (list "aa" "bb"))
+(define (fold f acc x) {
+    (define (go i acc) (if (= i (len x)) acc (go (+ i 1) (f acc (ref x i)))))
+    (go 0 acc)
+})
+(check "fold over a list" (fold cat "" (list "a" "b" "c")) "abc")
 (check "list of arrays" (len (list [1 2] [3 4 5])) 2)
+(define (go n acc) (if (= n 0) acc (go (- n 1) (cat (list n) acc))))
+(check "a list built by prepending" (go 4 (list)) '(1 2 3 4))
 
 ; ---------------------------------------------------------------- equality, types, env
 (check "equal? arrays" (equal? [1 2] [1 2]) 1)
@@ -176,9 +204,8 @@
 (check "len array" (len [1 2 3]) 3)
 (check "len list" (len '(a b)) 2)
 (check "len string" (len "hello") 5)
-(define (first-visible q) (car (env)))
-(check "env sees the local frame first" (first-visible 1) 'q)
-(check "env sees the globals" (> (len (env)) 40) 1)
+(check "help returns ()" (help) '())
+(check "help of one procedure" (help 'check) '())
 
 ; ---------------------------------------------------------------- files
 (define tmp "vlisp_tests_tmp.vl")
@@ -186,10 +213,10 @@
 (save tmp data '(1 "two" three ()) "a\"b\nc" f)
 (define back (read tmp))
 (check "save/read count" (len back) 4)
-(check "save/read array is exact" (car back) data)
-(check "save/read list" (car (cdr back)) '(1 "two" three ()))
-(check "save/read string with escapes" (car (cdr (cdr back))) "a\"b\nc")
-(check "save/read procedure comes back as source" (car (car (cdr (cdr (cdr back))))) 'lambda)
+(check "save/read array is exact" (ref back 0) data)
+(check "save/read list" (ref back 1) '(1 "two" three ()))
+(check "save/read string with escapes" (ref back 2) "a\"b\nc")
+(check "save/read procedure comes back as source" (ref (ref back 3) 0) 'lambda)
 (save tmp '(define loaded-value 123) '(* loaded-value 2))
 (check "load returns the last value" (load tmp) 246)
 (check "load defines" loaded-value 123)
